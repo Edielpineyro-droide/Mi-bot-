@@ -1,2 +1,7 @@
+
 aiogram
+fastapi
+uvicorn
+twilio
+requests
 
